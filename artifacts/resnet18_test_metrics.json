@@ -1,0 +1,112 @@
+{
+  "accuracy": 0.9098143236074271,
+  "macro_precision": 0.8930442338710635,
+  "macro_recall": 0.9008876029280338,
+  "macro_f1": 0.8958681814362276,
+  "per_class": {
+    "cardboard": {
+      "precision": 1.0,
+      "recall": 0.9166666666666666,
+      "f1": 0.9565217391304348,
+      "support": 60
+    },
+    "glass": {
+      "precision": 0.9066666666666666,
+      "recall": 0.9066666666666666,
+      "f1": 0.9066666666666666,
+      "support": 75
+    },
+    "metal": {
+      "precision": 0.8983050847457628,
+      "recall": 0.8688524590163934,
+      "f1": 0.8833333333333333,
+      "support": 61
+    },
+    "paper": {
+      "precision": 0.9325842696629213,
+      "recall": 0.9325842696629213,
+      "f1": 0.9325842696629213,
+      "support": 89
+    },
+    "plastic": {
+      "precision": 0.881578947368421,
+      "recall": 0.9305555555555556,
+      "f1": 0.9054054054054054,
+      "support": 72
+    },
+    "trash": {
+      "precision": 0.7391304347826086,
+      "recall": 0.85,
+      "f1": 0.7906976744186046,
+      "support": 20
+    }
+  },
+  "confusion_matrix": [
+    [
+      55,
+      0,
+      2,
+      3,
+      0,
+      0
+    ],
+    [
+      0,
+      68,
+      2,
+      0,
+      4,
+      1
+    ],
+    [
+      0,
+      2,
+      53,
+      3,
+      3,
+      0
+    ],
+    [
+      0,
+      1,
+      1,
+      83,
+      0,
+      4
+    ],
+    [
+      0,
+      4,
+      0,
+      0,
+      67,
+      1
+    ],
+    [
+      0,
+      0,
+      1,
+      0,
+      2,
+      17
+    ]
+  ],
+  "model": "resnet18",
+  "checkpoint": "artifacts/waste_resnet18.pt",
+  "checkpoint_selected_epoch": 5,
+  "checkpoint_validation_metrics": {
+    "accuracy": 0.9052631578947369,
+    "macro_f1": 0.9034896467017086
+  },
+  "test_split": "test",
+  "test_images": 377,
+  "confusion_matrix_orientation": "Rows are true classes; columns are predicted classes.",
+  "class_order": [
+    "cardboard",
+    "glass",
+    "metal",
+    "paper",
+    "plastic",
+    "trash"
+  ]
+}

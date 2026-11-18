@@ -1,0 +1,61 @@
+# Local Python environments
+.venv/
+venv/
+env/
+
+# Dataset and downloaded archives (kept locally, never committed)
+data/
+*.zip
+*.7z
+*.rar
+*.tar
+*.tar.gz
+*.tgz
+
+# Python caches and build/test output
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Editor and operating-system caches
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Temporary files and logs
+*.tmp
+*.temp
+*.bak
+*.log
+
+# Local caches, secrets, and credentials
+.cache/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets.*
+credentials.*
+
+# Keep only the intended evidence and trained checkpoints in artifacts/
+artifacts/*
+!artifacts/*.csv
+!artifacts/*.json
+!artifacts/waste_resnet18.pt
+!artifacts/waste_small_cnn.pt

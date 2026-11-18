@@ -1,0 +1,110 @@
+{
+  "dataset_root": "data/raw/dataset-resized",
+  "expected_classes": [
+    "cardboard",
+    "glass",
+    "metal",
+    "paper",
+    "plastic",
+    "trash"
+  ],
+  "missing_class_folders": [],
+  "counts_per_class": {
+    "cardboard": {
+      "jpeg_files": 403,
+      "readable": 403,
+      "unreadable": 0
+    },
+    "glass": {
+      "jpeg_files": 501,
+      "readable": 501,
+      "unreadable": 0
+    },
+    "metal": {
+      "jpeg_files": 410,
+      "readable": 410,
+      "unreadable": 0
+    },
+    "paper": {
+      "jpeg_files": 594,
+      "readable": 594,
+      "unreadable": 0
+    },
+    "plastic": {
+      "jpeg_files": 482,
+      "readable": 482,
+      "unreadable": 0
+    },
+    "trash": {
+      "jpeg_files": 137,
+      "readable": 137,
+      "unreadable": 0
+    }
+  },
+  "summary": {
+    "total_jpeg_files": 2527,
+    "total_readable": 2527,
+    "total_unreadable": 0,
+    "duplicate_groups": 3,
+    "cross_class_duplicate_groups": 3,
+    "hash_errors": 0
+  },
+  "unreadable_files": [],
+  "hash_errors": [],
+  "duplicate_groups": [
+    {
+      "sha256": "81546d1362d75fc60718e5852593c58f66f813e8c1e9d1eae6871fedb02e2868",
+      "files": [
+        {
+          "path": "data/raw/dataset-resized/glass/glass115.jpg",
+          "class_label": "glass"
+        },
+        {
+          "path": "data/raw/dataset-resized/metal/metal91.jpg",
+          "class_label": "metal"
+        }
+      ],
+      "class_labels": [
+        "glass",
+        "metal"
+      ],
+      "crosses_class_labels": true
+    },
+    {
+      "sha256": "c41b99aec8a3257c8668a2144ebbaf8042018f0a85d88e22bf4e413b43693dd8",
+      "files": [
+        {
+          "path": "data/raw/dataset-resized/glass/glass176.jpg",
+          "class_label": "glass"
+        },
+        {
+          "path": "data/raw/dataset-resized/plastic/plastic152.jpg",
+          "class_label": "plastic"
+        }
+      ],
+      "class_labels": [
+        "glass",
+        "plastic"
+      ],
+      "crosses_class_labels": true
+    },
+    {
+      "sha256": "e971f4f8f50e960e454ea724cec922fc2988bbf4027aa48b553e139bb5890968",
+      "files": [
+        {
+          "path": "data/raw/dataset-resized/glass/glass389.jpg",
+          "class_label": "glass"
+        },
+        {
+          "path": "data/raw/dataset-resized/plastic/plastic332.jpg",
+          "class_label": "plastic"
+        }
+      ],
+      "class_labels": [
+        "glass",
+        "plastic"
+      ],
+      "crosses_class_labels": true
+    }
+  ]
+}
