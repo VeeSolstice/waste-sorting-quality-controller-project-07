@@ -94,8 +94,7 @@ target-bin interface:
 .\.venv\Scripts\python.exe .\src\predict.py .\path\to\item.jpg plastic
 ```
 
-The old Tkinter file remains in `src/gui.py` for historical compatibility, but
-Streamlit is the recommended interface.
+The Streamlit app is the project's interface. The command-line predictor remains available for single-item checks and automation.
 
 ## Dataset provenance
 
