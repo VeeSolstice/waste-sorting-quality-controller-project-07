@@ -13,6 +13,7 @@ import io
 import json
 import math
 import random
+import re
 import time
 from collections import Counter
 from pathlib import Path
@@ -20,6 +21,7 @@ from typing import Any, Iterable, Sequence
 
 import numpy as np
 import torch
+from PIL import Image, ImageDraw
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 from torch.utils.data import DataLoader
@@ -64,8 +66,17 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def build_model(*, pretrained: bool, detector_max_size: int) -> torch.nn.Module:
+def build_model(
+    *,
+    pretrained: bool,
+    detector_min_size: int,
+    detector_max_size: int,
+) -> torch.nn.Module:
     """Build the named detector and replace its COCO predictor with 7 outputs."""
+    if detector_min_size < 1 or detector_max_size < detector_min_size:
+        raise ValueError(
+            "Detector sizes must be positive and maximum must be at least minimum"
+        )
     weights = (
         FasterRCNN_MobileNet_V3_Large_320_FPN_Weights.COCO_V1
         if pretrained
@@ -91,7 +102,7 @@ def build_model(*, pretrained: bool, detector_max_size: int) -> torch.nn.Module:
     model.roi_heads.box_predictor = FastRCNNPredictor(
         input_features, NUM_CLASSES_WITH_BACKGROUND
     )
-    model.transform.min_size = (min(320, detector_max_size),)
+    model.transform.min_size = (detector_min_size,)
     model.transform.max_size = detector_max_size
     return model
 
@@ -310,11 +321,17 @@ def validate(
     return evaluate_coco_ap50(predictions, targets_for_metric)
 
 
-def checkpoint_paths(output_dir: Path, smoke_test: bool) -> tuple[Path, Path]:
+def checkpoint_paths(
+    output_dir: Path, smoke_test: bool, experiment_name: str
+) -> tuple[Path, Path]:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", experiment_name):
+        raise ValueError(
+            "experiment_name must contain only letters, numbers, dot, dash, or underscore"
+        )
     suffix = "smoke" if smoke_test else "best"
     return (
-        output_dir / f"{ARCHITECTURE}_{suffix}.pt",
-        output_dir / f"{ARCHITECTURE}_{suffix}_history.json",
+        output_dir / f"{ARCHITECTURE}_{experiment_name}_{suffix}.pt",
+        output_dir / f"{ARCHITECTURE}_{experiment_name}_{suffix}_history.json",
     )
 
 
@@ -333,11 +350,16 @@ def _checkpoint_metadata(
         "background_index": 0,
         "policy": "B: five materials plus other annotated waste",
         "resize": {
-            "cpu_rule": "EXIF transpose, RGB, aspect-preserving downscale only; no crop",
-            "maximum_long_side": args.max_long_side,
-            "model_min_side": min(320, args.max_long_side),
-            "model_max_side": args.max_long_side,
+            "cpu": {
+                "rule": "EXIF transpose, RGB, aspect-preserving downscale only; no crop",
+                "maximum_long_side": args.cpu_max_long_side,
+            },
+            "model_transform": {
+                "minimum_side": args.detector_min_side,
+                "maximum_side": args.detector_max_side,
+            },
         },
+        "experiment_name": args.experiment_name,
         "seed": args.seed,
         "optimizer": {
             "name": "SGD",
@@ -356,17 +378,42 @@ def _checkpoint_metadata(
     }
 
 
+def model_resize_settings(metadata: dict[str, Any]) -> tuple[int, int]:
+    """Read current resize metadata while keeping the 320 checkpoint loadable."""
+    resize = metadata["resize"]
+    if "model_transform" in resize:
+        return (
+            int(resize["model_transform"]["minimum_side"]),
+            int(resize["model_transform"]["maximum_side"]),
+        )
+    return int(resize["model_min_side"]), int(resize["model_max_side"])
+
+
+@torch.no_grad()
+def load_checkpoint_model(
+    checkpoint_path: Path, device: torch.device
+) -> tuple[torch.nn.Module, dict[str, Any]]:
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    detector_min_size, detector_max_size = model_resize_settings(
+        checkpoint["metadata"]
+    )
+    model = build_model(
+        pretrained=False,
+        detector_min_size=detector_min_size,
+        detector_max_size=detector_max_size,
+    ).to(device)
+    model.load_state_dict(checkpoint["model_state_dict"], strict=True)
+    model.eval()
+    return model, checkpoint
+
+
 @torch.no_grad()
 def strict_reload_and_sanity_check(
     checkpoint_path: Path,
     dataset: TacoDetectionDataset,
     device: torch.device,
 ) -> dict[str, Any]:
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    resize_limit = int(checkpoint["metadata"]["resize"]["maximum_long_side"])
-    model = build_model(pretrained=False, detector_max_size=resize_limit).to(device)
-    model.load_state_dict(checkpoint["model_state_dict"], strict=True)
-    model.eval()
+    model, _ = load_checkpoint_model(checkpoint_path, device)
     image, target = dataset[0]
     output = model([image.to(device)])[0]
     if not all(key in output for key in ("boxes", "labels", "scores")):
@@ -382,6 +429,116 @@ def strict_reload_and_sanity_check(
         "top_score": float(output["scores"][0]) if len(output["scores"]) else None,
         "strict_state_dict_load": True,
     }
+
+
+@torch.no_grad()
+def transform_shape_report(
+    model: torch.nn.Module,
+    dataset: TacoDetectionDataset,
+    device: torch.device,
+) -> dict[str, Any]:
+    """Report CPU-loader and detector-transform shapes for one fixed item."""
+    image, target = dataset[0]
+    transformed, _ = model.transform(
+        [image.to(device)], _move_targets([target], device)
+    )
+    return {
+        "image_id": int(target["image_id"].item()),
+        "cpu_input_chw": list(image.shape),
+        "model_image_hw": list(transformed.image_sizes[0]),
+        "model_batched_nchw": list(transformed.tensors.shape),
+    }
+
+
+@torch.no_grad()
+def save_validation_visualizations(
+    model: torch.nn.Module,
+    dataset: TacoDetectionDataset,
+    image_ids: Sequence[int],
+    device: torch.device,
+    output_dir: Path,
+    score_threshold: float = 0.20,
+) -> list[dict[str, Any]]:
+    """Draw fixed validation ground truth and predictions for qualitative review."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    index_by_id = {
+        int(record["id"]): index for index, record in enumerate(dataset.images)
+    }
+    missing = [image_id for image_id in image_ids if image_id not in index_by_id]
+    if missing:
+        raise ValueError(f"Visualization IDs are not in validation: {missing}")
+
+    selection = {
+        "image_ids": list(image_ids),
+        "selection_rule": (
+            "Fixed from validation ground-truth categories before inspecting predictions"
+        ),
+        "prediction_score_threshold_for_drawing_only": score_threshold,
+    }
+    (output_dir / "selection.json").write_text(
+        json.dumps(selection, indent=2), encoding="utf-8"
+    )
+
+    records: list[dict[str, Any]] = []
+    for image_id in image_ids:
+        image, target = dataset[index_by_id[image_id]]
+        prediction = model([image.to(device)])[0]
+        rgb = (
+            image.permute(1, 2, 0).mul(255).round().clamp(0, 255).byte().numpy()
+        )
+        canvas = Image.fromarray(rgb, mode="RGB")
+        draw = ImageDraw.Draw(canvas)
+
+        ground_truth: list[dict[str, Any]] = []
+        for box, label in zip(target["boxes"], target["labels"]):
+            coordinates = [float(value) for value in box.tolist()]
+            class_name = INDEX_TO_CLASS[int(label)]
+            draw.rectangle(coordinates, outline="lime", width=3)
+            draw.text(
+                (coordinates[0] + 2, coordinates[1] + 2),
+                f"GT {class_name}",
+                fill="lime",
+            )
+            ground_truth.append({"class": class_name, "box_xyxy": coordinates})
+
+        drawn_predictions: list[dict[str, Any]] = []
+        for box, label, score in zip(
+            prediction["boxes"], prediction["labels"], prediction["scores"]
+        ):
+            confidence = float(score)
+            if confidence < score_threshold or len(drawn_predictions) >= 20:
+                continue
+            coordinates = [float(value) for value in box.detach().cpu().tolist()]
+            class_name = INDEX_TO_CLASS[int(label)]
+            draw.rectangle(coordinates, outline="red", width=2)
+            draw.text(
+                (coordinates[0] + 2, coordinates[1] + 14),
+                f"P {class_name} {confidence:.2f}",
+                fill="red",
+            )
+            drawn_predictions.append(
+                {
+                    "class": class_name,
+                    "score": confidence,
+                    "box_xyxy": coordinates,
+                }
+            )
+
+        image_path = output_dir / f"validation_{image_id}.jpg"
+        canvas.save(image_path, quality=92)
+        records.append(
+            {
+                "image_id": image_id,
+                "file": image_path.name,
+                "ground_truth": ground_truth,
+                "drawn_predictions": drawn_predictions,
+            }
+        )
+
+    (output_dir / "visualization_records.json").write_text(
+        json.dumps(records, indent=2), encoding="utf-8"
+    )
+    return records
 
 
 def parse_args() -> argparse.Namespace:
@@ -405,17 +562,60 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learning-rate", type=float, default=0.0025)
     parser.add_argument("--momentum", type=float, default=0.9)
     parser.add_argument("--weight-decay", type=float, default=0.0005)
-    parser.add_argument("--max-long-side", type=int, default=640)
+    parser.add_argument(
+        "--cpu-max-long-side",
+        "--max-long-side",
+        dest="cpu_max_long_side",
+        type=int,
+        default=640,
+        help="Aspect-preserving CPU downscale limit; --max-long-side is an alias",
+    )
+    parser.add_argument("--detector-min-side", type=int)
+    parser.add_argument("--detector-max-side", type=int)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--experiment-name", default="default")
+    parser.add_argument(
+        "--visualization-image-ids",
+        default="",
+        help="Comma-separated, preselected validation image IDs",
+    )
+    parser.add_argument("--visualization-score-threshold", type=float, default=0.20)
     parser.add_argument("--smoke-test", action="store_true")
     parser.add_argument("--smoke-train-batches", type=int, default=3)
     parser.add_argument("--smoke-validation-batches", type=int, default=3)
     args = parser.parse_args()
-    if args.epochs < 1 or args.batch_size < 1 or args.max_long_side < 1:
-        parser.error("epochs, batch-size, and max-long-side must be positive")
+    if args.detector_min_side is None:
+        args.detector_min_side = min(320, args.cpu_max_long_side)
+    if args.detector_max_side is None:
+        args.detector_max_side = args.cpu_max_long_side
+    if (
+        args.epochs < 1
+        or args.batch_size < 1
+        or args.cpu_max_long_side < 1
+        or args.detector_min_side < 1
+        or args.detector_max_side < args.detector_min_side
+    ):
+        parser.error(
+            "epochs, batch size, and resize limits must be positive; detector "
+            "maximum must be at least its minimum"
+        )
+    try:
+        checkpoint_paths(Path("."), False, args.experiment_name)
+    except ValueError as error:
+        parser.error(str(error))
+    if not 0.0 <= args.visualization_score_threshold <= 1.0:
+        parser.error("visualization score threshold must be between 0 and 1")
+    try:
+        args.visualization_image_ids = [
+            int(value.strip())
+            for value in args.visualization_image_ids.split(",")
+            if value.strip()
+        ]
+    except ValueError:
+        parser.error("visualization image IDs must be comma-separated integers")
     return args
 
 
@@ -435,14 +635,14 @@ def main() -> None:
         args.images,
         args.manifest,
         split="train",
-        max_long_side=args.max_long_side,
+        max_long_side=args.cpu_max_long_side,
     )
     validation_dataset = TacoDetectionDataset(
         args.annotations,
         args.images,
         args.manifest,
         split="validation",
-        max_long_side=args.max_long_side,
+        max_long_side=args.cpu_max_long_side,
     )
     if not train_dataset or not validation_dataset:
         raise RuntimeError("Train and validation splits must both contain images")
@@ -483,11 +683,27 @@ def main() -> None:
     print(
         f"batch_size={args.batch_size} lr={args.learning_rate} "
         f"momentum={args.momentum} weight_decay={args.weight_decay} "
-        f"max_long_side={args.max_long_side}"
+        f"cpu_max_long_side={args.cpu_max_long_side} "
+        f"detector_min_side={args.detector_min_side} "
+        f"detector_max_side={args.detector_max_side}"
     )
 
-    model = build_model(pretrained=True, detector_max_size=args.max_long_side).to(
-        device
+    model = build_model(
+        pretrained=True,
+        detector_min_size=args.detector_min_side,
+        detector_max_size=args.detector_max_side,
+    ).to(device)
+    print(
+        "train_shape_report="
+        + json.dumps(
+            transform_shape_report(model, train_dataset, device), sort_keys=True
+        )
+    )
+    print(
+        "validation_shape_report="
+        + json.dumps(
+            transform_shape_report(model, validation_dataset, device), sort_keys=True
+        )
     )
     optimizer = torch.optim.SGD(
         [parameter for parameter in model.parameters() if parameter.requires_grad],
@@ -497,7 +713,9 @@ def main() -> None:
     )
     scaler = torch.amp.GradScaler(device.type, enabled=amp_enabled)
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint_path, history_path = checkpoint_paths(args.output_dir, args.smoke_test)
+    checkpoint_path, history_path = checkpoint_paths(
+        args.output_dir, args.smoke_test, args.experiment_name
+    )
     metadata = _checkpoint_metadata(
         args,
         args.annotations,
@@ -569,6 +787,34 @@ def main() -> None:
     print(f"best_checkpoint={checkpoint_path} best_validation_ap50={best_ap50:.6f}")
     print("reload_sanity=" + json.dumps(sanity, sort_keys=True))
     print(f"history={history_path}")
+    if not args.smoke_test and args.visualization_image_ids:
+        reloaded_model, _ = load_checkpoint_model(checkpoint_path, device)
+        visualization_dir = (
+            args.output_dir / f"{args.experiment_name}_validation_visualizations"
+        )
+        visualization_records = save_validation_visualizations(
+            reloaded_model,
+            validation_dataset,
+            args.visualization_image_ids,
+            device,
+            visualization_dir,
+            args.visualization_score_threshold,
+        )
+        print(f"validation_visualizations={visualization_dir}")
+        print(
+            "visualization_summary="
+            + json.dumps(
+                [
+                    {
+                        "image_id": record["image_id"],
+                        "ground_truth_boxes": len(record["ground_truth"]),
+                        "drawn_predictions": len(record["drawn_predictions"]),
+                    }
+                    for record in visualization_records
+                ],
+                sort_keys=True,
+            )
+        )
 
 
 if __name__ == "__main__":
