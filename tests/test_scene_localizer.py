@@ -49,6 +49,33 @@ class SceneLocalizerTests(unittest.TestCase):
         result = localize_objects(image)
         self.assertEqual(len(result.boxes), 1)
 
+    def test_overlapping_fragments_of_one_object_are_reconciled(self) -> None:
+        image = Image.new("RGB", (500, 350), "white")
+        draw = ImageDraw.Draw(image)
+        # A U-shaped main component surrounds a disconnected inner highlight.
+        # Their pixels do not touch, but the smaller component's box is contained
+        # by the main component's box, matching a fragmented reflective object.
+        draw.rectangle((140, 75, 165, 270), fill="#202020")
+        draw.rectangle((285, 75, 310, 270), fill="#202020")
+        draw.rectangle((140, 235, 310, 270), fill="#202020")
+        draw.rectangle((185, 120, 265, 165), fill="#202020")
+
+        result = localize_objects(image)
+
+        self.assertEqual(len(result.boxes), 1)
+        self.assertLessEqual(result.boxes[0].x_min, 140)
+        self.assertGreaterEqual(result.boxes[0].x_max, 311)
+
+    def test_two_nearby_peer_sized_objects_remain_separate(self) -> None:
+        image = Image.new("RGB", (500, 350), "white")
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((90, 90, 215, 270), fill="#202020")
+        draw.rectangle((221, 90, 346, 270), fill="#315FA8")
+
+        result = localize_objects(image)
+
+        self.assertEqual(len(result.boxes), 2)
+
     def test_small_noise_is_removed(self) -> None:
         image = Image.new("RGB", (600, 400), "white")
         draw = ImageDraw.Draw(image)

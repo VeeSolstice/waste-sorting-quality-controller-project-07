@@ -21,6 +21,8 @@ MIN_REGION_AREA = 700
 MIN_REGION_AREA_RATIO = 0.0015
 MAX_REGION_AREA_RATIO = 0.88
 MAX_OBJECTS = 12
+MIN_FRAGMENT_OVERLAP_RATIO = 0.65
+MAX_NEARBY_FRAGMENT_AREA_RATIO = 0.18
 
 
 class LocalizationError(Exception):
@@ -54,6 +56,121 @@ class LocalizationResult:
     color_distance_threshold: float
     minimum_region_area: int
     message: str
+
+
+def _bounding_area(box: BoundingBox) -> int:
+    return box.width * box.height
+
+
+def _axis_overlap(start_a: int, end_a: int, start_b: int, end_b: int) -> int:
+    return max(0, min(end_a, end_b) - max(start_a, start_b))
+
+
+def _axis_gap(start_a: int, end_a: int, start_b: int, end_b: int) -> int:
+    if end_a < start_b:
+        return start_b - end_a
+    if end_b < start_a:
+        return start_a - end_b
+    return 0
+
+
+def _should_merge_fragments(
+    first: BoundingBox,
+    second: BoundingBox,
+    distance_tolerance: int,
+) -> bool:
+    """Return True only when two component boxes strongly suggest one object.
+
+    Components whose boxes substantially overlap or contain one another are likely
+    foreground fragments separated by low-contrast pixels. A tiny gap is allowed
+    only when the smaller component is much smaller and the boxes are strongly
+    aligned on the other axis. Peer-sized objects are therefore not joined merely
+    because they sit close together on the same row.
+    """
+    x_overlap = _axis_overlap(
+        first.x_min, first.x_max, second.x_min, second.x_max
+    )
+    y_overlap = _axis_overlap(
+        first.y_min, first.y_max, second.y_min, second.y_max
+    )
+    first_box_area = _bounding_area(first)
+    second_box_area = _bounding_area(second)
+    smaller_box_area = min(first_box_area, second_box_area)
+    larger_box_area = max(first_box_area, second_box_area)
+    overlap_ratio = (x_overlap * y_overlap) / smaller_box_area
+
+    if overlap_ratio >= MIN_FRAGMENT_OVERLAP_RATIO:
+        return True
+
+    smaller, larger = (
+        (first, second)
+        if first_box_area <= second_box_area
+        else (second, first)
+    )
+    almost_contained = (
+        smaller.x_min >= larger.x_min - distance_tolerance
+        and smaller.y_min >= larger.y_min - distance_tolerance
+        and smaller.x_max <= larger.x_max + distance_tolerance
+        and smaller.y_max <= larger.y_max + distance_tolerance
+    )
+    if almost_contained and overlap_ratio >= 0.50:
+        return True
+
+    if smaller_box_area / larger_box_area > MAX_NEARBY_FRAGMENT_AREA_RATIO:
+        return False
+
+    x_gap = _axis_gap(first.x_min, first.x_max, second.x_min, second.x_max)
+    y_gap = _axis_gap(first.y_min, first.y_max, second.y_min, second.y_max)
+    vertical_alignment = y_overlap / min(first.height, second.height)
+    horizontal_alignment = x_overlap / min(first.width, second.width)
+    return (
+        x_gap <= distance_tolerance
+        and vertical_alignment >= 0.85
+    ) or (
+        y_gap <= distance_tolerance
+        and horizontal_alignment >= 0.85
+    )
+
+
+def _merge_component_fragments(
+    boxes: list[BoundingBox], distance_tolerance: int
+) -> list[BoundingBox]:
+    """Combine component boxes linked by conservative fragment evidence."""
+    parents = list(range(len(boxes)))
+
+    def find(index: int) -> int:
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    def union(first_index: int, second_index: int) -> None:
+        first_root = find(first_index)
+        second_root = find(second_index)
+        if first_root != second_root:
+            parents[second_root] = first_root
+
+    for first_index, first in enumerate(boxes):
+        for second_index in range(first_index + 1, len(boxes)):
+            if _should_merge_fragments(
+                first, boxes[second_index], distance_tolerance
+            ):
+                union(first_index, second_index)
+
+    groups: dict[int, list[BoundingBox]] = {}
+    for index, box in enumerate(boxes):
+        groups.setdefault(find(index), []).append(box)
+
+    return [
+        BoundingBox(
+            x_min=min(box.x_min for box in group),
+            y_min=min(box.y_min for box in group),
+            x_max=max(box.x_max for box in group),
+            y_max=max(box.y_max for box in group),
+            area=sum(box.area for box in group),
+        )
+        for group in groups.values()
+    ]
 
 
 def validate_image_dimensions(width: int, height: int) -> None:
@@ -133,7 +250,7 @@ def localize_objects(image: Image.Image) -> LocalizationResult:
         mask, connectivity=8
     )
 
-    candidates: list[tuple[int, int, int, int, int]] = []
+    candidates: list[BoundingBox] = []
     oversized_foreground = False
     for component in range(1, component_count):
         x, y, component_width, component_height, area = (
@@ -144,8 +261,25 @@ def localize_objects(image: Image.Image) -> LocalizationResult:
         if area / image_area > MAX_REGION_AREA_RATIO:
             oversized_foreground = True
             continue
-        candidates.append((x, y, component_width, component_height, area))
+        candidates.append(
+            BoundingBox(
+                x_min=x,
+                y_min=y,
+                x_max=x + component_width,
+                y_max=y + component_height,
+                area=area,
+            )
+        )
 
+    if len(candidates) > MAX_OBJECTS * 4:
+        raise LocalizationError(
+            f"The foreground mask produced {len(candidates)} substantial regions, "
+            "too many to reconcile safely. Use a plainer background, "
+            "remove clutter, or photograph fewer separated items."
+        )
+
+    fragment_tolerance = max(2, round(short_side * 0.003))
+    candidates = _merge_component_fragments(candidates, fragment_tolerance)
     if len(candidates) > MAX_OBJECTS:
         raise LocalizationError(
             f"The foreground mask produced {len(candidates)} substantial regions, "
@@ -156,13 +290,13 @@ def localize_objects(image: Image.Image) -> LocalizationResult:
     padding = max(4, round(short_side * 0.012))
     boxes = [
         BoundingBox(
-            x_min=max(0, x - padding),
-            y_min=max(0, y - padding),
-            x_max=min(width, x + component_width + padding),
-            y_max=min(height, y + component_height + padding),
-            area=area,
+            x_min=max(0, box.x_min - padding),
+            y_min=max(0, box.y_min - padding),
+            x_max=min(width, box.x_max + padding),
+            y_max=min(height, box.y_max + padding),
+            area=box.area,
         )
-        for x, y, component_width, component_height, area in candidates
+        for box in candidates
     ]
     boxes.sort(key=lambda box: (box.y_min, box.x_min, box.y_max, box.x_max))
 

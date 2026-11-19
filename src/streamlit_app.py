@@ -206,6 +206,23 @@ if isinstance(stored_result, SceneAnalysisResult):
                 width="stretch",
             )
 
+        if st.checkbox(
+            "Show foreground mask",
+            help=(
+                "White pixels passed the background-contrast rule. Disconnected "
+                "fragments may be reconciled into one object box afterward."
+            ),
+        ):
+            st.image(
+                result.localization.foreground_mask,
+                caption=(
+                    "Stage 1 foreground mask — white is foreground, black is "
+                    "estimated background"
+                ),
+                clamp=True,
+                width="stretch",
+            )
+
         st.markdown('<div class="eyebrow">3 · SORTING SUMMARY</div>', unsafe_allow_html=True)
         count_columns = st.columns(max(1, len(result.counts_by_suggestion)))
         for column, (category, count) in zip(
