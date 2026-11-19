@@ -175,3 +175,117 @@ class TwoLayerMLP:
                     f"expected {parameter.shape}"
                 )
             parameter -= learning_rate * gradient
+
+    def zero_velocity_state(self) -> dict[str, Array]:
+        """Return zero velocity arrays matching ``w1``, ``b1``, ``w2``, and ``b2``."""
+        return {
+            name: np.zeros_like(parameter)
+            for name, parameter in self.parameters().items()
+        }
+
+    def _validate_momentum_inputs(
+        self,
+        gradients: dict[str, Array],
+        velocities: dict[str, Array],
+        learning_rate: float,
+        momentum: float,
+    ) -> None:
+        """Validate same-shaped gradient and velocity tensors for an update."""
+        if learning_rate <= 0:
+            raise ValueError("learning_rate must be positive")
+        if not 0.0 <= momentum < 1.0:
+            raise ValueError("momentum must be in the interval [0, 1)")
+
+        parameters = self.parameters()
+        if gradients.keys() != parameters.keys():
+            raise ValueError("gradients must contain w1, b1, w2, and b2")
+        if velocities.keys() != parameters.keys():
+            raise ValueError("velocities must contain w1, b1, w2, and b2")
+
+        for name, parameter in parameters.items():
+            gradient = np.asarray(gradients[name])
+            velocity = np.asarray(velocities[name])
+            if gradient.shape != parameter.shape:
+                raise ValueError(
+                    f"gradient for {name} has shape {gradient.shape}; "
+                    f"expected {parameter.shape}"
+                )
+            if velocity.shape != parameter.shape:
+                raise ValueError(
+                    f"velocity for {name} has shape {velocity.shape}; "
+                    f"expected {parameter.shape}"
+                )
+            if not np.issubdtype(velocity.dtype, np.floating):
+                raise ValueError(f"velocity for {name} must use a floating dtype")
+
+    def momentum_step(
+        self,
+        gradients: dict[str, Array],
+        velocities: dict[str, Array],
+        learning_rate: float,
+        momentum: float,
+    ) -> None:
+        """Apply ordinary Momentum using gradients at the current parameters.
+
+        For every parameter tensor ``theta`` and same-shaped velocity ``v``:
+        ``v = momentum * v - learning_rate * gradient`` and ``theta += v``.
+        The supplied velocity arrays are updated in place.
+        """
+        self._validate_momentum_inputs(
+            gradients, velocities, learning_rate, momentum
+        )
+        for name, parameter in self.parameters().items():
+            gradient = np.asarray(gradients[name], dtype=np.float64)
+            velocities[name][...] = (
+                momentum * velocities[name] - learning_rate * gradient
+            )
+            parameter += velocities[name]
+
+    def nesterov_step(
+        self,
+        inputs: Array,
+        targets: Array,
+        velocities: dict[str, Array],
+        learning_rate: float,
+        momentum: float,
+    ) -> float:
+        """Apply Nesterov momentum using a gradient at look-ahead parameters.
+
+        The look-ahead point is ``theta + momentum * v``. The method evaluates
+        ``loss_and_gradients`` there, restores the current parameters, then uses
+        ``v = momentum * v - learning_rate * lookahead_gradient`` and
+        ``theta += v``. It returns the finite loss observed at the look-ahead.
+        """
+        parameters = self.parameters()
+        placeholder_gradients = {
+            name: np.zeros_like(parameter)
+            for name, parameter in parameters.items()
+        }
+        self._validate_momentum_inputs(
+            placeholder_gradients, velocities, learning_rate, momentum
+        )
+
+        original_parameters = {
+            name: parameter.copy() for name, parameter in parameters.items()
+        }
+        for name, parameter in parameters.items():
+            parameter[...] = original_parameters[name] + momentum * velocities[name]
+
+        try:
+            lookahead_loss, _, lookahead_gradients = self.loss_and_gradients(
+                inputs, targets
+            )
+        finally:
+            for name, parameter in parameters.items():
+                parameter[...] = original_parameters[name]
+
+        self._validate_momentum_inputs(
+            lookahead_gradients, velocities, learning_rate, momentum
+        )
+        for name, parameter in parameters.items():
+            gradient = np.asarray(lookahead_gradients[name], dtype=np.float64)
+            velocities[name][...] = (
+                momentum * velocities[name] - learning_rate * gradient
+            )
+            parameter += velocities[name]
+        return float(lookahead_loss)
