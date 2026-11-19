@@ -12,8 +12,11 @@ except ImportError:  # Allows: python src/fundamentals/demo_gradients.py
 
 DEMO_SEED = 7
 FINITE_DIFFERENCE_EPSILON = 1e-5
-SGD_LEARNING_RATE = 0.2
-SGD_STEPS = 80
+FULL_BATCH_LEARNING_RATE = 0.2
+FULL_BATCH_STEPS = 80
+STOCHASTIC_LEARNING_RATE = 0.2
+STOCHASTIC_UPDATES = 80
+STOCHASTIC_SEED = 23
 
 
 def make_tiny_example() -> tuple[np.ndarray, np.ndarray, TwoLayerMLP]:
@@ -64,16 +67,68 @@ def maximum_relative_error(analytical: np.ndarray, numerical: np.ndarray) -> flo
     return float(np.max(np.abs(analytical - numerical) / denominator))
 
 
+def train_full_batch_gradient_descent(
+    model: TwoLayerMLP,
+    inputs: np.ndarray,
+    targets: np.ndarray,
+    *,
+    steps: int = FULL_BATCH_STEPS,
+    learning_rate: float = FULL_BATCH_LEARNING_RATE,
+) -> tuple[float, float]:
+    """Train from gradients computed over all examples on every update.
+
+    ``inputs`` has shape ``(5, 3)`` and ``targets`` has shape ``(5,)`` in the
+    demonstration. Both returned losses are evaluated on all five examples.
+    """
+    initial_full_dataset_loss = model.loss(inputs, targets)
+    for _ in range(steps):
+        _, _, gradients = model.loss_and_gradients(inputs, targets)
+        model.sgd_step(gradients, learning_rate)
+    final_full_dataset_loss = model.loss(inputs, targets)
+    return initial_full_dataset_loss, final_full_dataset_loss
+
+
+def train_stochastic_sgd(
+    model: TwoLayerMLP,
+    inputs: np.ndarray,
+    targets: np.ndarray,
+    *,
+    updates: int = STOCHASTIC_UPDATES,
+    learning_rate: float = STOCHASTIC_LEARNING_RATE,
+    seed: int = STOCHASTIC_SEED,
+) -> tuple[float, float]:
+    """Train using one randomly sampled example per parameter update.
+
+    The reported initial and final losses use the full ``(5, 3)`` input matrix.
+    Each update gradient, however, uses ``sample_inputs`` with shape ``(1, 3)``
+    and ``sample_targets`` with shape ``(1,)``.
+    """
+    initial_full_dataset_loss = model.loss(inputs, targets)
+    generator = np.random.default_rng(seed)
+    for _ in range(updates):
+        sample_index = int(generator.integers(inputs.shape[0]))
+        sample_inputs = inputs[sample_index : sample_index + 1]  # (1, 3)
+        sample_targets = targets[sample_index : sample_index + 1]  # (1,)
+        _, _, gradients = model.loss_and_gradients(
+            sample_inputs, sample_targets
+        )
+        model.sgd_step(gradients, learning_rate)
+    final_full_dataset_loss = model.loss(inputs, targets)
+    return initial_full_dataset_loss, final_full_dataset_loss
+
+
 def main() -> None:
-    inputs, targets, model = make_tiny_example()
-    initial_loss, _, analytical = model.loss_and_gradients(inputs, targets)
-    numerical = finite_difference_gradients(model, inputs, targets)
+    inputs, targets, gradient_check_model = make_tiny_example()
+    _, _, analytical = gradient_check_model.loss_and_gradients(inputs, targets)
+    numerical = finite_difference_gradients(
+        gradient_check_model, inputs, targets
+    )
 
     errors = {
         name: maximum_relative_error(analytical[name], numerical[name])
         for name in analytical
     }
-    _, cache = model.forward(inputs)
+    _, cache = gradient_check_model.forward(inputs)
     minimum_relu_distance = float(
         np.min(np.abs(cache["hidden_pre_activation"]))
     )
@@ -93,15 +148,37 @@ def main() -> None:
         f"{minimum_relu_distance:.6f} (safely away from zero)."
     )
 
-    for _ in range(SGD_STEPS):
-        _, _, gradients = model.loss_and_gradients(inputs, targets)
-        model.sgd_step(gradients, SGD_LEARNING_RATE)
-    final_loss = model.loss(inputs, targets)
+    _, _, full_batch_model = make_tiny_example()
+    _, _, stochastic_model = make_tiny_example()
+    identical_initial_weights = all(
+        np.array_equal(
+            full_batch_model.parameters()[name],
+            stochastic_model.parameters()[name],
+        )
+        for name in full_batch_model.parameters()
+    )
+    if not identical_initial_weights:
+        raise RuntimeError("training comparisons did not start from identical weights")
 
-    print(f"Loss before SGD: {initial_loss:.6f}")
+    full_initial, full_final = train_full_batch_gradient_descent(
+        full_batch_model, inputs, targets
+    )
+    stochastic_initial, stochastic_final = train_stochastic_sgd(
+        stochastic_model, inputs, targets
+    )
+
+    print(f"Training runs share identical initial weights: {identical_initial_weights}")
+    print("Full-batch gradient descent:")
+    print(f"  Initial loss on all five examples: {full_initial:.6f}")
     print(
-        f"Loss after {SGD_STEPS} SGD updates "
-        f"(learning rate {SGD_LEARNING_RATE}): {final_loss:.6f}"
+        f"  Final loss on all five examples after {FULL_BATCH_STEPS} updates "
+        f"(learning rate {FULL_BATCH_LEARNING_RATE}): {full_final:.6f}"
+    )
+    print(f"Stochastic SGD (one sampled example per update, seed {STOCHASTIC_SEED}):")
+    print(f"  Initial loss on all five examples: {stochastic_initial:.6f}")
+    print(
+        f"  Final loss on all five examples after {STOCHASTIC_UPDATES} updates "
+        f"(learning rate {STOCHASTIC_LEARNING_RATE}): {stochastic_final:.6f}"
     )
 
 
