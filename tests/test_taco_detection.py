@@ -48,6 +48,63 @@ def sample_coco() -> dict[str, object]:
 
 
 class TacoDetectionPreparationTests(unittest.TestCase):
+    def test_exif_orientation_aligns_image_and_coco_boxes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            raw = Image.new("RGB", (4, 2), "green")
+            exif = Image.Exif()
+            exif[274] = 6  # Rotate 90 degrees: displayed dimensions become 2 by 4.
+            raw.save(root / "oriented.jpg", exif=exif)
+            annotations = {
+                "images": [
+                    {"id": 1, "width": 2, "height": 4, "file_name": "oriented.jpg"}
+                ],
+                "annotations": [
+                    {"id": 1, "image_id": 1, "category_id": 1, "bbox": [0, 0, 2, 4]}
+                ],
+                "categories": [{"id": 1, "name": "cardboard"}],
+            }
+            annotation_path = root / "annotations.json"
+            annotation_path.write_text(json.dumps(annotations), encoding="utf-8")
+
+            image, target = TacoDetectionDataset(annotation_path, root)[0]
+
+            self.assertEqual(tuple(image.shape), (3, 4, 2))
+            torch.testing.assert_close(
+                target["boxes"], torch.tensor([[0.0, 0.0, 2.0, 4.0]])
+            )
+            self.assertEqual(target["original_size"].tolist(), [4, 2])
+            self.assertEqual(target["size"].tolist(), [4, 2])
+
+    def test_aspect_resize_scales_boxes_without_cropping(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            Image.new("RGB", (40, 20), "yellow").save(root / "wide.jpg")
+            annotations = {
+                "images": [
+                    {"id": 1, "width": 40, "height": 20, "file_name": "wide.jpg"}
+                ],
+                "annotations": [
+                    {"id": 1, "image_id": 1, "category_id": 1, "bbox": [10, 5, 10, 5]}
+                ],
+                "categories": [{"id": 1, "name": "cardboard"}],
+            }
+            annotation_path = root / "annotations.json"
+            annotation_path.write_text(json.dumps(annotations), encoding="utf-8")
+
+            image, target = TacoDetectionDataset(
+                annotation_path, root, max_long_side=20
+            )[0]
+
+            self.assertEqual(tuple(image.shape), (3, 10, 20))
+            torch.testing.assert_close(
+                target["boxes"], torch.tensor([[5.0, 2.5, 10.0, 5.0]])
+            )
+            torch.testing.assert_close(target["area"], torch.tensor([12.5]))
+            self.assertTrue(
+                torch.all(target["boxes"][:, 2:] > target["boxes"][:, :2])
+            )
+
     def test_policy_a_excludes_mixed_image_and_policy_b_uses_other(self) -> None:
         data = sample_coco()
         policy_a, summary_a = plan_policy(data, POLICY_A)

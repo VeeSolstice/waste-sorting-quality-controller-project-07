@@ -1,0 +1,3 @@
+# Install the CUDA-enabled torch and torchvision build separately as documented
+# in README.md. This is the additional dependency used for genuine COCO AP50.
+pycocotools==2.0.11
