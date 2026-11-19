@@ -18,6 +18,9 @@ TACO_COMMIT = "70479ad9adc3da971a8ae75ac97eb1026910eec7"
 TACO_ANNOTATION_URL = (
     f"{TACO_REPOSITORY_URL}/blob/{TACO_COMMIT}/data/annotations.json"
 )
+TACO_ANNOTATION_SHA256 = (
+    "812c2e3f0d336b437f276597715de2abb08bb8a641599c45f593d233ec66457b"
+)
 DEFAULT_ANNOTATIONS = Path("data/external/TACO-official/data/annotations.json")
 DEFAULT_OUTPUT = Path("data/audits/taco_annotation_audit.json")
 
