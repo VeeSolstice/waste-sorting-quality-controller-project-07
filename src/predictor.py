@@ -11,6 +11,7 @@ from PIL import Image, UnidentifiedImageError
 from model_config import (
     CHECKPOINT_PATH,
     CLASS_TO_INDEX,
+    PREPROCESSING_INFO,
     QUALITY_THRESHOLD,
     SOFTMAX_NOTICE,
 )
@@ -34,13 +35,15 @@ class PredictionResult:
 def quality_control_result(
     predicted_class: str,
     top_score: float,
-    selected_bin: str,
+    selected_bin: str | None,
     threshold: float = QUALITY_THRESHOLD,
 ) -> str:
-    """Apply the initial prediction-based quality-control rule."""
+    """Apply the prediction rule, with optional selected-bin comparison."""
     # Softmax is not a calibrated guarantee; this is only a prediction rule.
     if top_score < threshold:
         return "Manual review"
+    if selected_bin is None:
+        return f"Suggested category: {predicted_class}"
     if predicted_class == selected_bin:
         return "Matches selected bin"
     return "Potential contaminant—review"
@@ -69,6 +72,10 @@ class WastePredictor:
             )
         if checkpoint.get("class_to_index") != CLASS_TO_INDEX:
             raise PredictionError("Checkpoint class mapping does not match this project.")
+        if checkpoint.get("preprocessing") != PREPROCESSING_INFO:
+            raise PredictionError(
+                "Checkpoint preprocessing does not match the validated ResNet setup."
+            )
 
         self.class_to_index = checkpoint["class_to_index"]
         self.index_to_class = {
@@ -85,22 +92,20 @@ class WastePredictor:
             ) from error
         self.model.eval()
 
-    def predict(self, image_path: Path, selected_bin: str) -> PredictionResult:
-        if selected_bin not in self.class_to_index:
+    def predict_image(
+        self, image: Image.Image, selected_bin: str | None = None
+    ) -> PredictionResult:
+        """Classify an in-memory PIL image crop with saved preprocessing."""
+        if selected_bin is not None and selected_bin not in self.class_to_index:
             choices = ", ".join(self.class_to_index)
             raise PredictionError(
                 f"Unknown target bin {selected_bin!r}. Choose one of: {choices}."
             )
-        if not image_path.is_file():
-            raise PredictionError(f"Image not found: {image_path}")
+        if not isinstance(image, Image.Image):
+            raise PredictionError("Prediction input must be a PIL image.")
 
-        try:
-            with Image.open(image_path) as source_image:
-                image = source_image.convert("RGB")
-        except (OSError, UnidentifiedImageError) as error:
-            raise PredictionError(f"Could not open image {image_path}: {error}") from error
-
-        image_tensor = self.transform(image).unsqueeze(0).to(self.device)
+        rgb_image = image.convert("RGB")
+        image_tensor = self.transform(rgb_image).unsqueeze(0).to(self.device)
         with torch.no_grad():
             probabilities = torch.softmax(self.model(image_tensor), dim=1)[0].cpu()
 
@@ -113,3 +118,17 @@ class WastePredictor:
             predicted_class, top_score, selected_bin
         )
         return PredictionResult(predicted_class, top_score, scores, decision)
+
+    def predict(self, image_path: Path, selected_bin: str) -> PredictionResult:
+        """Keep the original path-based CLI prediction interface working."""
+        if not image_path.is_file():
+            raise PredictionError(f"Image not found: {image_path}")
+
+        try:
+            with Image.open(image_path) as source_image:
+                source_image.load()
+                image = source_image.convert("RGB")
+        except (OSError, UnidentifiedImageError) as error:
+            raise PredictionError(f"Could not open image {image_path}: {error}") from error
+
+        return self.predict_image(image, selected_bin)

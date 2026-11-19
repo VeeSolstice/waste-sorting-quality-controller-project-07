@@ -1,7 +1,8 @@
 # Waste Sorting and Recycling Quality Controller
 
-A Python 3.13 image-classification prototype for sorting one main waste item
-into one of six classes:
+A local Python 3.13 prototype that analyzes a controlled-background image with
+several **separated** waste items. It suggests one of six categories for each
+localized region:
 
 - `cardboard`
 - `glass`
@@ -10,36 +11,106 @@ into one of six classes:
 - `plastic`
 - `trash`
 
-The primary model is a pretrained ResNet-18 fine-tuned on this dataset. A
-small CNN trained from scratch provides an experimental baseline. The project
-includes dataset auditing and reproducible split generation, training,
-held-out evaluation, command-line prediction, and a simple Tkinter GUI.
+The polished Streamlit page is the primary demonstration interface. The saved
+ResNet-18 checkpoint, SmallCNN baseline, dataset manifests, and historical test
+evidence remain unchanged.
 
-## Scope and quality-control rule
+## What the current prototype does
 
-The prototype expects **one main item per image**. It does not perform object
-detection, segmentation, or direct measurement of material contamination.
+The scene workflow has two explicit stages:
 
-For prediction, the user selects a target bin. The initial operational rule is:
+1. **Controlled-background localization.** OpenCV and NumPy estimate the border
+   background color, create a foreground mask, clean small noise, find connected
+   regions, filter by area, and return bounding boxes. This is classical image
+   processing—not YOLO and not a learned object detector.
+2. **Crop classification.** Each localized PIL crop is passed in memory to the
+   existing ResNet-18 with the checkpoint's saved deterministic preprocessing.
+   The model predicts cardboard, glass, metal, paper, plastic, or trash.
 
-1. If the highest softmax score is below `0.60`, return **Manual review**.
-2. Otherwise, if the predicted class equals the selected bin, return
+The intended scene contains roughly 2–4 separated objects on a plain,
+contrasting background. Touching items may merge into one region. A cluttered,
+textured, low-contrast, or nearly full-frame foreground can fail localization;
+the app then reports the problem instead of silently classifying the whole scene
+as one item.
+
+## Sorting suggestions and optional target-bin check
+
+Target-bin checking is optional. Without a target bin, each sufficiently
+confident crop receives its predicted class as a sorting suggestion.
+
+The provisional rule is:
+
+1. If the highest softmax score is below `0.60`, mark the item **Manual review**.
+2. If no target bin is selected, show the predicted category as a suggestion.
+3. If a target bin is selected and the prediction matches it, show
    **Matches selected bin**.
-3. Otherwise, return **Potential contaminant—review**.
+4. Otherwise show **Potential contaminant—review**.
 
-This flag is a prediction-based rule. Softmax scores are not calibrated
-guarantees, and the test results below are classification results—not measured
-contamination-detection accuracy.
+Softmax scores are not calibrated guarantees. This is a prediction-based review
+rule, not measured contamination accuracy, bin purity, or physical conveyor
+control.
 
-## Dataset
+## Run the Streamlit app
+
+From PowerShell in the project directory:
+
+```powershell
+.\.venv\Scripts\python.exe -m streamlit run .\src\streamlit_app.py
+```
+
+The page supports:
+
+- JPG, JPEG, PNG, BMP, and WebP uploads;
+- original and annotated scene views;
+- numbered per-item boxes, predictions, scores, and review flags;
+- counts by suggested category;
+- optional selected-bin comparison;
+- downloadable annotated PNG and per-item CSV;
+- local cached checkpoint loading with no inference API or internet dependency.
+
+For the most reliable live demonstration, use good lighting, a plain background,
+clear object separation, and an image no larger than 20 MB or 20 million pixels.
+
+## Local composite demonstration
+
+The following command builds an explicitly labelled **COMPOSITE DEMONSTRATION**
+from three validation-split TrashNet images:
+
+```powershell
+.\.venv\Scripts\python.exe .\src\create_composite_demo.py
+```
+
+It writes `data/demo/composite_validation_scene.png`. The `data/` directory is
+ignored by Git. This composite is a pipeline smoke-test scene, not a factory
+photograph and not multi-object ground truth. It does not use test-split images
+to tune localization.
+
+## Single-item CLI compatibility
+
+The original command-line predictor remains available and keeps the mandatory
+target-bin interface:
+
+```powershell
+.\.venv\Scripts\python.exe .\src\predict.py .\path\to\item.jpg plastic
+```
+
+The old Tkinter file remains in `src/gui.py` for historical compatibility, but
+Streamlit is the recommended interface.
+
+## Dataset provenance
 
 This project was developed with the 2,527-image
-[TrashNet dataset-resized collection](https://github.com/garythung/trashnet)
-from Gary Thung and Mindy Yang. Raw images and downloaded archives are not
-stored in this repository.
+[TrashNet dataset-resized collection](https://github.com/garythung/trashnet),
+credited upstream to Gary Thung and Mindy Yang. The upstream README asks users
+to cite the repository. It contains an
+[MIT License](https://github.com/garythung/trashnet/blob/master/LICENSE), with
+Copyright (c) 2017 Gary Thung.
 
-Obtain the dataset separately from the upstream project and extract it so the
-six class folders are located at:
+TrashNet contains single-item class photos; it does not provide real multi-item
+bounding boxes or contamination labels. Raw images and downloaded archives are
+kept locally and are not committed.
+
+Place the separately obtained dataset at:
 
 ```text
 data/raw/dataset-resized/
@@ -51,47 +122,50 @@ data/raw/dataset-resized/
 └── trash/
 ```
 
-One PowerShell download method is:
+## Reproducible environment
 
-```powershell
-New-Item -ItemType Directory -Force .\data\raw | Out-Null
-Invoke-WebRequest `
-  -Uri "https://github.com/garythung/trashnet/raw/master/data/dataset-resized.zip" `
-  -OutFile .\data\raw\dataset-resized.zip
-Expand-Archive .\data\raw\dataset-resized.zip -DestinationPath .\data\raw -Force
-```
-
-Review the upstream source before using or redistributing the dataset. This
-repository does not assert dataset license terms that have not been verified.
-
-## Environment and setup
-
-The recorded training environment was:
+The verified local environment is:
 
 - Python 3.13.15
-- Pillow 13.0.0
 - PyTorch 2.11.0 with CUDA 12.8 (`2.11.0+cu128`)
 - torchvision 0.26.0 with CUDA 12.8 (`0.26.0+cu128`)
-- NVIDIA GeForce RTX 3050 6GB Laptop GPU
-- Windows, with `num_workers=0` for reliable data loading
+- NVIDIA GeForce RTX 3050 6 GB Laptop GPU
+- NumPy 2.5.4
+- Pillow 13.0.0
+- OpenCV Python 5.1.0.95
+- Streamlit 1.67.0
+- Windows with data-loader workers set to zero
 
 Create the matching environment from PowerShell:
 
 ```powershell
 py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install Pillow==13.0.0
 .\.venv\Scripts\python.exe -m pip install `
   torch==2.11.0 torchvision==0.26.0 `
   --index-url https://download.pytorch.org/whl/cu128
+.\.venv\Scripts\python.exe -m pip install -r .\requirements-app.txt
 ```
 
-Tkinter is included with the standard Windows Python installation used here.
-CUDA is selected automatically when available; otherwise the programs use CPU.
+The application does not download pretrained weights at inference time; it
+constructs ResNet-18 without weights and loads `artifacts/waste_resnet18.pt`.
 
-## Dataset preparation
+## Verification commands
 
-Audit the local images and create deterministic train/validation/test manifests:
+Compile the source and run the controlled-scene tests:
+
+```powershell
+.\.venv\Scripts\python.exe -m compileall -q .\src .\tests
+.\.venv\Scripts\python.exe -m unittest discover -s .\tests -v
+```
+
+The tests cover separated regions, blank scenes, touching regions, small noise,
+too many substantial regions, oversized dimensions, invalid image bytes,
+optional target-bin behavior, and PNG/CSV result consistency.
+
+## Dataset preparation and training history
+
+Audit and deterministic split generation:
 
 ```powershell
 .\.venv\Scripts\python.exe .\src\audit_dataset.py
@@ -99,58 +173,20 @@ Audit the local images and create deterministic train/validation/test manifests:
 ```
 
 The committed manifest contains 1,764 training, 380 validation, and 377 test
-images. Cross-class byte-identical images are excluded before splitting.
+images. Six cross-class byte-identical files are excluded before splitting.
 
-## Training
-
-Fine-tune ResNet-18 for five epochs:
+Historical training commands:
 
 ```powershell
 .\.venv\Scripts\python.exe .\src\train_model.py
-```
-
-Train the SmallCNN baseline from scratch for five epochs:
-
-```powershell
 .\.venv\Scripts\python.exe .\src\train_baseline.py
 ```
 
-Both checkpoints are selected only by validation macro F1. The test split is
-not loaded by either training program.
+Both checkpoints were selected only by validation macro F1. This Streamlit
+milestone does not retrain either model and does not rerun the held-out test
+evaluation.
 
-## Final evaluation
-
-Evaluate both already selected checkpoints once on the held-out test split:
-
-```powershell
-.\.venv\Scripts\python.exe .\src\evaluate_models.py
-```
-
-The script writes metrics JSON, confusion-matrix CSV, and per-image prediction
-CSV files under `artifacts/`. Confusion-matrix rows are true classes and
-columns are predicted classes.
-
-## CLI prediction
-
-Pass an image path and selected target bin:
-
-```powershell
-.\.venv\Scripts\python.exe .\src\predict.py .\path\to\item.jpg plastic
-```
-
-The CLI prints the predicted class, all six softmax scores, and the
-prediction-based quality-control result.
-
-## Tkinter GUI
-
-```powershell
-.\.venv\Scripts\python.exe .\src\gui.py
-```
-
-Choose an image, select the intended bin, and click **Analyze**. The GUI loads
-the committed ResNet-18 checkpoint once at startup.
-
-## Measured held-out classification results
+## Measured held-out single-item classification results
 
 Both checkpoints were fixed using validation results before the 377-image test
 split was evaluated.
@@ -160,9 +196,25 @@ split was evaluated.
 | ResNet-18 | 343/377 | 0.9098 | 0.8959 |
 | SmallCNN | 238/377 | 0.6313 | 0.5647 |
 
-These values measure six-class image classification only. The dataset does not
-provide the real-bin contamination ground truth required to report measured
-contamination-detection accuracy.
+These are six-class **single-item classification** results. They are not
+multi-object localization accuracy, multi-object detection accuracy, mAP, IoU,
+contamination accuracy, recycling purity, latency, FPS, or production conveyor
+performance.
 
-Detailed metrics, per-class results, confusion matrices, and individual test
-predictions are available in `artifacts/`.
+Detailed historical metrics, per-class results, confusion matrices, and
+per-image test predictions remain under `artifacts/`.
+
+## Remaining limitations
+
+- There are no real multi-object bounding-box annotations for quantitative
+  localization evaluation.
+- Real-scene validation with an independently photographed 2–4 item scene is
+  still pending; the repository currently provides only the labelled composite
+  smoke test.
+- Touching or overlapping items can merge, while texture and shadows can create
+  false regions.
+- The classifier was trained on single-item TrashNet photographs, so crop and
+  real-scene distribution shift remains unmeasured.
+- The provisional `0.60` review threshold has not been calibrated.
+- No production latency, FPS, conveyor, camera, purity, or contamination study
+  has been performed.

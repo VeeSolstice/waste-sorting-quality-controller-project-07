@@ -41,6 +41,9 @@ Desktop.ini
 *.bak
 *.log
 
+# Local evaluation documents (never commit or upload)
+docs/
+
 # Local caches, secrets, and credentials
 .cache/
 .env
