@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from evaluate_taco_detector import (  # noqa: E402
     cpu_max_long_side_from_metadata,
+    detector_postprocessing_metadata,
     select_checkpoint_summaries,
     validate_manifest_split_isolation,
 )
@@ -20,6 +21,18 @@ from train_taco_detector import evaluate_coco_bbox_metrics  # noqa: E402
 
 
 class TacoDetectorEvaluationTests(unittest.TestCase):
+    def test_evaluator_distinguishes_internal_and_application_thresholds(self) -> None:
+        roi_heads = type(
+            "RoiHeads", (), {"score_thresh": 0.05, "detections_per_img": 100}
+        )()
+        model = type("Model", (), {"roi_heads": roi_heads})()
+
+        metadata = detector_postprocessing_metadata(model)
+
+        self.assertEqual(metadata["model_internal_score_threshold"], 0.05)
+        self.assertIsNone(metadata["additional_application_score_threshold"])
+        self.assertEqual(metadata["model_maximum_detections_per_image"], 100)
+
     def test_checkpoint_selection_uses_validation_ap50_and_hash_tie_rule(self) -> None:
         common = {
             "annotation_sha256": "annotation",

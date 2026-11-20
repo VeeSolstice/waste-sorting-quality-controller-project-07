@@ -155,6 +155,17 @@ def _tensor_boxes(
     return records
 
 
+def detector_postprocessing_metadata(model: torch.nn.Module) -> dict[str, Any]:
+    """Distinguish Torchvision's internal filter from application filtering."""
+    return {
+        "model_internal_score_threshold": float(model.roi_heads.score_thresh),
+        "additional_application_score_threshold": None,
+        "model_maximum_detections_per_image": int(
+            model.roi_heads.detections_per_img
+        ),
+    }
+
+
 @torch.no_grad()
 def run_fixed_test_evaluation(args: argparse.Namespace) -> dict[str, Any]:
     """Verify the frozen decision, then load and evaluate only test images."""
@@ -252,6 +263,8 @@ def run_fixed_test_evaluation(args: argparse.Namespace) -> dict[str, Any]:
             )
 
     metrics = evaluate_coco_bbox_metrics(predictions, targets_for_metric)
+    postprocessing = detector_postprocessing_metadata(model)
+    metrics["evaluator"].update(postprocessing)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     predictions_path.write_text(
         json.dumps(prediction_records, indent=2), encoding="utf-8"
@@ -269,8 +282,8 @@ def run_fixed_test_evaluation(args: argparse.Namespace) -> dict[str, Any]:
         "manifest_sha256": manifest_hash,
         "split": "test",
         "test_image_count": len(dataset),
-        "score_threshold": None,
-        "all_model_predictions_used_up_to_model_max_detections": True,
+        **postprocessing,
+        "predictions_used_after_internal_model_filter_only": True,
         "cpu_max_long_side": cpu_max_long_side_from_metadata(metadata),
         "model_transform": metadata["resize"].get("model_transform"),
         "amp": amp_enabled,
