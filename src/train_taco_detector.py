@@ -112,11 +112,12 @@ def _xyxy_to_xywh(box: Sequence[float]) -> list[float]:
     return [x1, y1, x2 - x1, y2 - y1]
 
 
-def evaluate_coco_ap50(
+def evaluate_coco_bbox_metrics(
     predictions: Sequence[dict[str, torch.Tensor]],
     targets: Sequence[dict[str, torch.Tensor]],
+    iou_thresholds: Sequence[float] | None = None,
 ) -> dict[str, Any]:
-    """Calculate bbox AP50 with the official COCO evaluator.
+    """Calculate COCO bbox AP and AP50 with the official evaluator.
 
     Prediction and ground-truth boxes must both be xyxy in the same resized
     image coordinate system. Classes with no ground-truth support return null.
@@ -124,7 +125,21 @@ def evaluate_coco_ap50(
     if len(predictions) != len(targets):
         raise ValueError("Predictions and targets must have the same length")
     if not targets:
-        raise ValueError("AP50 requires at least one validation target")
+        raise ValueError("COCO evaluation requires at least one target")
+    thresholds = np.asarray(
+        list(iou_thresholds)
+        if iou_thresholds is not None
+        else np.linspace(0.50, 0.95, 10),
+        dtype=np.float64,
+    )
+    if (
+        thresholds.ndim != 1
+        or not thresholds.size
+        or np.any(thresholds <= 0.0)
+        or np.any(thresholds > 1.0)
+        or not np.any(np.isclose(thresholds, 0.50))
+    ):
+        raise ValueError("IoU thresholds must be in (0, 1] and include 0.50")
 
     images: list[dict[str, int]] = []
     annotations: list[dict[str, Any]] = []
@@ -197,25 +212,62 @@ def evaluate_coco_ap50(
         evaluator = COCOeval(ground_truth, detections, iouType="bbox")
         evaluator.params.imgIds = [image["id"] for image in images]
         evaluator.params.catIds = sorted(INDEX_TO_CLASS)
-        evaluator.params.iouThrs = np.array([0.5], dtype=np.float64)
+        evaluator.params.iouThrs = thresholds
         evaluator.evaluate()
         evaluator.accumulate()
 
     # Shape: IoU thresholds, recall thresholds, classes, areas, max detections.
     precision = evaluator.eval["precision"]
-    all_valid = precision[0, :, :, 0, -1]
+    all_valid = precision[:, :, :, 0, -1]
     valid_values = all_valid[all_valid > -1]
-    overall = float(np.mean(valid_values)) if valid_values.size else 0.0
+    overall_ap = float(np.mean(valid_values)) if valid_values.size else 0.0
+    ap50_index = int(np.flatnonzero(np.isclose(thresholds, 0.50))[0])
+    ap50_values = precision[ap50_index, :, :, 0, -1]
+    ap50_valid = ap50_values[ap50_values > -1]
+    overall_ap50 = float(np.mean(ap50_valid)) if ap50_valid.size else 0.0
 
     per_class: dict[str, dict[str, Any]] = {}
     for class_position, category_id in enumerate(evaluator.params.catIds):
-        class_values = precision[0, :, class_position, 0, -1]
+        class_values = precision[:, :, class_position, 0, -1]
         class_valid = class_values[class_values > -1]
+        class_ap50_values = precision[ap50_index, :, class_position, 0, -1]
+        class_ap50_valid = class_ap50_values[class_ap50_values > -1]
         per_class[INDEX_TO_CLASS[category_id]] = {
-            "ap50": float(np.mean(class_valid)) if class_valid.size else None,
+            "ap": float(np.mean(class_valid)) if class_valid.size else None,
+            "ap50": (
+                float(np.mean(class_ap50_valid))
+                if class_ap50_valid.size
+                else None
+            ),
             "support": int(support[category_id]),
         }
-    return {"overall_ap50": overall, "per_class_ap50": per_class}
+    return {
+        "overall_ap": overall_ap,
+        "overall_ap50": overall_ap50,
+        "per_class": per_class,
+        "evaluator": {
+            "implementation": "pycocotools.COCOeval",
+            "iou_type": "bbox",
+            "iou_thresholds": [float(value) for value in thresholds],
+            "area_range": "all",
+            "maximum_detections_per_image": 100,
+        },
+    }
+
+
+def evaluate_coco_ap50(
+    predictions: Sequence[dict[str, torch.Tensor]],
+    targets: Sequence[dict[str, torch.Tensor]],
+) -> dict[str, Any]:
+    """Compatibility wrapper used for validation checkpoint selection."""
+    metrics = evaluate_coco_bbox_metrics(predictions, targets, [0.50])
+    return {
+        "overall_ap50": metrics["overall_ap50"],
+        "per_class_ap50": {
+            name: {"ap50": values["ap50"], "support": values["support"]}
+            for name, values in metrics["per_class"].items()
+        },
+    }
 
 
 def _move_targets(
